@@ -510,12 +510,16 @@ def delete_terminal(terminal_id: str) -> dict:
 # MAIN ENTRY POINT
 # ============================================================================
 
-if __name__ == "__main__":
-    # Run the MCP server
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
 
 def main():
     """Entry point for pip installation."""
     mcp.run()
+
 
 if __name__ == "__main__":
     main()
