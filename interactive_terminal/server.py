@@ -361,13 +361,25 @@ class TerminalSession:
         output = ""
         
         if IS_WINDOWS:
-            # pywinpty - use its read method with timeout
-            try:
-                data = self.process.read(timeout=timeout)
-                if data:
-                    output = data if isinstance(data, str) else data.decode('utf-8', errors='replace')
-            except Exception:
-                pass
+            # pywinpty - read in a loop to get all available data
+            # Windows PTY may need multiple reads to capture all output
+            max_iterations = 10  # Prevent infinite loop
+            current_timeout = timeout
+            for _ in range(max_iterations):
+                try:
+                    data = self.process.read(timeout=current_timeout)
+                    if data:
+                        chunk = data if isinstance(data, str) else data.decode('utf-8', errors='replace')
+                        output += chunk
+                        # If we got data, try to read more with shorter timeout
+                        current_timeout = 0.01  # Shorter timeout for subsequent reads
+                    else:
+                        # No more data available
+                        break
+                except Exception as e:
+                    # Timeout or no data - this is expected
+                    logger.debug(f"Read iteration completed: {e}")
+                    break
         else:
             # ptyprocess on Unix - use select + os.read for non-blocking I/O
             try:
