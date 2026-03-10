@@ -19,8 +19,141 @@ import subprocess
 import time
 import shlex
 import re
+import sys
+import json
+import logging
+import urllib.request
+import urllib.error
 from typing import Dict, Optional, List, Any
 from mcp.server.fastmcp import FastMCP
+
+# Import version from package
+try:
+    from interactive_terminal import VERSION as CURRENT_VERSION
+except ImportError:
+    CURRENT_VERSION = "1.1.0"
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("InteractiveTerminal")
+
+# PyPI API URL for version checking
+PYPI_API_URL = "https://pypi.org/pypi/vitjas-interactive-terminal/json"
+
+# Environment variable to disable auto-update
+AUTO_UPDATE_ENABLED = os.environ.get("VITJAS_AUTO_UPDATE", "true").lower() not in ("false", "0", "no")
+
+
+# ============================================================================
+# AUTO-UPDATE FUNCTIONALITY
+# ============================================================================
+
+def check_for_update() -> Optional[str]:
+    """
+    Check PyPI for the latest version of vitjas-interactive-terminal.
+    
+    Returns:
+        Latest version string if available and newer than current, None otherwise.
+    """
+    try:
+        logger.info(f"Checking for updates (current version: {CURRENT_VERSION})...")
+        
+        request = urllib.request.Request(
+            PYPI_API_URL,
+            headers={"Accept": "application/json", "User-Agent": f"vitjas-interactive-terminal/{CURRENT_VERSION}"}
+        )
+        
+        with urllib.request.urlopen(request, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            latest_version = data["info"]["version"]
+            
+            logger.info(f"Latest version on PyPI: {latest_version}")
+            
+            # Compare versions (simple string comparison works for semver)
+            if latest_version != CURRENT_VERSION:
+                # More robust version comparison
+                try:
+                    from packaging import version
+                    if version.parse(latest_version) > version.parse(CURRENT_VERSION):
+                        return latest_version
+                except ImportError:
+                    # Fallback to string comparison if packaging not available
+                    if latest_version > CURRENT_VERSION:
+                        return latest_version
+        
+        return None
+        
+    except urllib.error.URLError as e:
+        logger.warning(f"Could not reach PyPI: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.warning(f"Could not parse PyPI response: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Update check failed: {e}")
+        return None
+
+
+def perform_upgrade() -> bool:
+    """
+    Perform pip upgrade of vitjas-interactive-terminal.
+    
+    Returns:
+        True if upgrade successful, False otherwise.
+    """
+    try:
+        logger.info("Starting auto-update via pip...")
+        
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "vitjas-interactive-terminal"],
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout
+        )
+        
+        if result.returncode == 0:
+            logger.info("Update installed successfully!")
+            logger.info(f"pip output: {result.stdout}")
+            return True
+        else:
+            logger.warning(f"Update failed with return code {result.returncode}")
+            logger.warning(f"pip stderr: {result.stderr}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logger.warning("Update timed out after 120 seconds")
+        return False
+    except Exception as e:
+        logger.warning(f"Update failed with exception: {e}")
+        return False
+
+
+def run_auto_update_check():
+    """
+    Run the complete auto-update check and upgrade process.
+    This is designed to be run synchronously at startup (quick check) or can be extended for async.
+    """
+    if not AUTO_UPDATE_ENABLED:
+        logger.info("Auto-update disabled via VITJAS_AUTO_UPDATE environment variable")
+        return False
+    
+    logger.info("Running auto-update check...")
+    latest_version = check_for_update()
+    
+    if latest_version:
+        logger.info(f"New version {latest_version} available (current: {CURRENT_VERSION})")
+        
+        if perform_upgrade():
+            logger.info("Restart with new version to complete update.")
+            return True
+    else:
+        logger.info("No update available or update check failed")
+    
+    return False
+
 
 # Initialize FastMCP server
 mcp = FastMCP("InteractiveTerminal")
@@ -510,14 +643,17 @@ def delete_terminal(terminal_id: str) -> dict:
 # MAIN ENTRY POINT
 # ============================================================================
 
-
-
-# ============================================================================
-# MAIN ENTRY POINT
-# ============================================================================
-
 def main():
     """Entry point for pip installation."""
+    logger.info(f"Starting InteractiveTerminal MCP Server v{CURRENT_VERSION}")
+    
+    # Run auto-update check before starting the server
+    try:
+        run_auto_update_check()
+    except Exception as e:
+        logger.warning(f"Auto-update check failed (non-fatal): {e}")
+    
+    # Start the MCP server
     mcp.run()
 
 
