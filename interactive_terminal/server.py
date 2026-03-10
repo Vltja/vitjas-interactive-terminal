@@ -306,7 +306,7 @@ class TerminalSession:
             if IS_WINDOWS:
                 # pywinpty on Windows
                 self.process = PtyProcess.spawn(
-                    cmd=[shell],
+                    [shell],
                     cwd=directory,
                     dimensions=(rows, cols),
                     env=os.environ.copy()
