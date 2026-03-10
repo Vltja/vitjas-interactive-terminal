@@ -24,6 +24,7 @@ import urllib.error
 import threading
 import re
 import select
+import traceback
 # fcntl is Unix-only - imported conditionally below
 from typing import Dict, Optional, List, Any
 from mcp.server.fastmcp import FastMCP
@@ -58,12 +59,15 @@ try:
 except ImportError:
     CURRENT_VERSION = "1.2.0"
 
-# Configure logging
+# Configure logging - DEBUG level for detailed troubleshooting
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("InteractiveTerminal")
+
+logger.debug(f"=== DEBUG LOGGING ENABLED ===")
+logger.debug(f"Platform: {platform.system()}, IS_WINDOWS: {IS_WINDOWS}, PTY_BACKEND: {PTY_BACKEND}")
 
 # PyPI API URL for version checking
 PYPI_API_URL = "https://pypi.org/pypi/vitjas-interactive-terminal/json"
@@ -195,42 +199,42 @@ class KeyMapper:
     # Special keys - VT100/ANSI escape sequences
     SPECIAL_KEYS = {
         # Navigation
-        "up": "\x1b[A",
-        "down": "\x1b[B",
-        "right": "\x1b[C",
-        "left": "\x1b[D",
-        "home": "\x1b[H",
-        "end": "\x1b[F",
-        "pageup": "\x1b[5~",
-        "pagedown": "\x1b[6~",
+        "up": "[A",
+        "down": "[B",
+        "right": "[C",
+        "left": "[D",
+        "home": "[H",
+        "end": "[F",
+        "pageup": "[5~",
+        "pagedown": "[6~",
         
         # Standard keys
         "enter": "\r",
         "return": "\r",
         "tab": "\t",
-        "escape": "\x1b",
-        "esc": "\x1b",
-        "backspace": "\x7f",
-        "delete": "\x1b[3~",
-        "del": "\x1b[3~",
+        "escape": "",
+        "esc": "",
+        "backspace": "",
+        "delete": "[3~",
+        "del": "[3~",
         
         # Function keys
-        "f1": "\x1bOP",
-        "f2": "\x1bOQ",
-        "f3": "\x1bOR",
-        "f4": "\x1bOS",
-        "f5": "\x1b[15~",
-        "f6": "\x1b[17~",
-        "f7": "\x1b[18~",
-        "f8": "\x1b[19~",
-        "f9": "\x1b[20~",
-        "f10": "\x1b[21~",
-        "f11": "\x1b[23~",
-        "f12": "\x1b[24~",
+        "f1": "OP",
+        "f2": "OQ",
+        "f3": "OR",
+        "f4": "OS",
+        "f5": "[15~",
+        "f6": "[17~",
+        "f7": "[18~",
+        "f8": "[19~",
+        "f9": "[20~",
+        "f10": "[21~",
+        "f11": "[23~",
+        "f12": "[24~",
         
         # Keypad
         "kp_enter": "\r",
-        "insert": "\x1b[2~",
+        "insert": "[2~",
     }
     
     @classmethod
@@ -242,27 +246,27 @@ class KeyMapper:
         if key_lower in cls.SPECIAL_KEYS:
             return cls.SPECIAL_KEYS[key_lower]
         
-        # Ctrl combinations: ctrl+a, ctrl-a, ctrl_a -> \x01
+        # Ctrl combinations: ctrl+a, ctrl-a, ctrl_a -> 
         ctrl_match = re.match(r'^ctrl[+_-]([a-z])$', key_lower)
         if ctrl_match:
             char = ctrl_match.group(1)
             return chr(ord(char) - ord('a') + 1)
         
-        # Alt combinations: alt+a, alt-a, alt_a -> \x1ba
+        # Alt combinations: alt+a, alt-a, alt_a -> a
         alt_match = re.match(r'^(?:alt|meta)[+_-]([a-z0-9])$', key_lower)
         if alt_match:
             char = alt_match.group(1)
-            return f"\x1b{char}"
+            return f"{char}"
         
         # Shift+arrow for selection
         shift_arrow_match = re.match(r'^shift[+_-](up|down|left|right)$', key_lower)
         if shift_arrow_match:
             arrow = shift_arrow_match.group(1)
             shift_arrows = {
-                "up": "\x1b[1;2A",
-                "down": "\x1b[1;2B",
-                "right": "\x1b[1;2C",
-                "left": "\x1b[1;2D",
+                "up": "[1;2A",
+                "down": "[1;2B",
+                "right": "[1;2C",
+                "left": "[1;2D",
             }
             return shift_arrows.get(arrow)
         
@@ -302,9 +306,15 @@ class TerminalSession:
                 # On Unix-like systems, use bash or sh
                 shell = os.environ.get('SHELL', '/bin/bash')
             
+            logger.debug(f"[TerminalSession] Creating PTY for {terminal_id}")
+            logger.debug(f"[TerminalSession] Shell: {shell}")
+            logger.debug(f"[TerminalSession] Directory: {directory}")
+            logger.debug(f"[TerminalSession] Dimensions: {rows}x{cols}")
+            
             # Create PtyProcess
             if IS_WINDOWS:
                 # pywinpty on Windows
+                logger.debug(f"[TerminalSession] Using pywinpty PtyProcess.spawn...")
                 self.process = PtyProcess.spawn(
                     [shell],
                     cwd=directory,
@@ -312,6 +322,9 @@ class TerminalSession:
                     env=os.environ.copy()
                 )
                 self._fd = None  # pywinpty handles fd internally
+                logger.debug(f"[TerminalSession] PtyProcess.spawn returned: {self.process}")
+                logger.debug(f"[TerminalSession] Process type: {type(self.process)}")
+                logger.debug(f"[TerminalSession] Process isalive: {self.process.isalive()}")
             else:
                 # ptyprocess on Unix
                 self.process = PtyProcess.spawn(
@@ -328,58 +341,85 @@ class TerminalSession:
             
             logger.info(f"Created terminal {terminal_id} with shell: {shell} (backend: {PTY_BACKEND})")
             
+            # Give the terminal a moment to initialize and capture initial output
+            time.sleep(0.2)
+            initial_output = self._read_output_internal(timeout=0.3)
+            logger.debug(f"[TerminalSession] Initial output captured: {repr(initial_output[:200]) if initial_output else 'EMPTY'}")
+            
         except Exception as e:
             logger.error(f"Failed to create PTY for {terminal_id}: {e}")
+            logger.error(traceback.format_exc())
             raise RuntimeError(f"Failed to create terminal: {e}")
     
     def is_alive(self) -> bool:
         """Check if the terminal process is still running."""
         try:
-            return self.process.isalive()
-        except Exception:
+            alive = self.process.isalive()
+            logger.debug(f"[is_alive] Terminal {self.terminal_id} alive: {alive}")
+            return alive
+        except Exception as e:
+            logger.debug(f"[is_alive] Exception checking alive: {e}")
             return False
     
     def send(self, data: str) -> bool:
         """Send data to the terminal."""
         if not self.is_alive():
+            logger.warning(f"[send] Terminal {self.terminal_id} is not alive!")
             return False
         
         try:
             with self._lock:
+                logger.debug(f"[send] Sending to {self.terminal_id}: {repr(data[:100])}")
                 # ptyprocess (Unix) requires bytes, pywinpty (Windows) accepts strings
                 if IS_WINDOWS:
                     self.process.write(data)
+                    logger.debug(f"[send] Write successful (Windows)")
                 else:
                     self.process.write(data.encode('utf-8'))
+                    logger.debug(f"[send] Write successful (Unix)")
             return True
         except Exception as e:
             logger.error(f"Error sending to terminal {self.terminal_id}: {e}")
+            logger.error(traceback.format_exc())
             return False
     
-    def read_output(self, timeout: float = 0.1) -> str:
-        """Read available output from the terminal using non-blocking I/O."""
+    def _read_output_internal(self, timeout: float = 0.1) -> str:
+        """Internal read method - reads without updating buffer."""
         output = ""
         
         if IS_WINDOWS:
+            logger.debug(f"[_read_output_internal] Windows read, timeout={timeout}")
             # pywinpty - read in a loop to get all available data
-            # Windows PTY may need multiple reads to capture all output
-            max_iterations = 10  # Prevent infinite loop
+            max_iterations = 20  # Increased for more thorough reading
             current_timeout = timeout
-            for _ in range(max_iterations):
+            total_read = 0
+            
+            for iteration in range(max_iterations):
                 try:
+                    logger.debug(f"[_read_output_internal] Read iteration {iteration}, timeout={current_timeout}")
                     data = self.process.read(timeout=current_timeout)
+                    
+                    logger.debug(f"[_read_output_internal] Raw data type: {type(data)}, value: {repr(data[:100]) if data else repr(data)}")
+                    
                     if data:
                         chunk = data if isinstance(data, str) else data.decode('utf-8', errors='replace')
                         output += chunk
+                        total_read += len(chunk)
+                        logger.debug(f"[_read_output_internal] Read {len(chunk)} chars, total so far: {total_read}")
                         # If we got data, try to read more with shorter timeout
-                        current_timeout = 0.01  # Shorter timeout for subsequent reads
+                        current_timeout = 0.02  # Shorter timeout for subsequent reads
                     else:
+                        logger.debug(f"[_read_output_internal] No data returned (empty string/None)")
                         # No more data available
                         break
                 except Exception as e:
-                    # Timeout or no data - this is expected
-                    logger.debug(f"Read iteration completed: {e}")
+                    # Log all exceptions for debugging
+                    logger.debug(f"[_read_output_internal] Exception on iteration {iteration}: {type(e).__name__}: {e}")
+                    # Only break on specific exceptions that mean "no more data"
+                    # pywinpty may raise different exceptions
                     break
+            
+            logger.debug(f"[_read_output_internal] Total read: {total_read} chars in {iteration+1} iterations")
         else:
             # ptyprocess on Unix - use select + os.read for non-blocking I/O
             try:
@@ -391,6 +431,7 @@ class TerminalSession:
                         data = os.read(self._fd, 65536)
                         if data:
                             output = data.decode('utf-8', errors='replace')
+                            logger.debug(f"[_read_output_internal] Unix read: {len(output)} chars")
                     except BlockingIOError:
                         pass
                     except OSError:
@@ -398,23 +439,39 @@ class TerminalSession:
             except Exception:
                 pass
         
+        return output
+    
+    def read_output(self, timeout: float = 0.1) -> str:
+        """Read available output from the terminal and update buffer."""
+        output = self._read_output_internal(timeout)
+        
         # Append to buffer if we got output
         if output:
             with self._lock:
                 self._buffer += output
+                logger.debug(f"[read_output] Buffer updated, new size: {len(self._buffer)}")
                 # Trim buffer if too large
                 if len(self._buffer) > self._buffer_max_size:
                     self._buffer = self._buffer[-(self._buffer_max_size // 2):]
+                    logger.debug(f"[read_output] Buffer trimmed to: {len(self._buffer)}")
         
         return output
     
     def get_screen_content(self) -> str:
         """Get the current buffer content."""
+        logger.debug(f"[get_screen_content] Called for {self.terminal_id}")
+        
         # First, read any pending output
-        self.read_output(timeout=0.05)
+        pending = self.read_output(timeout=0.1)
+        logger.debug(f"[get_screen_content] Pending output: {repr(pending[:100]) if pending else 'NONE'}")
         
         with self._lock:
-            return self._buffer
+            buffer_content = self._buffer
+        
+        logger.debug(f"[get_screen_content] Buffer size: {len(buffer_content)}")
+        logger.debug(f"[get_screen_content] Buffer preview: {repr(buffer_content[:200]) if buffer_content else 'EMPTY'}")
+        
+        return buffer_content
     
     def resize(self, cols: int, rows: int):
         """Resize the terminal."""
@@ -532,14 +589,20 @@ class TerminalManager:
     
     def capture(self, terminal_id: str, start: Optional[int] = None, end: Optional[int] = None) -> str:
         """Capture terminal screen content."""
+        logger.debug(f"[capture] Called for {terminal_id}, start={start}, end={end}")
+        
         with self._lock:
             session = self._sessions.get(terminal_id)
         
         if not session:
+            logger.warning(f"[capture] Session {terminal_id} not found")
             return "Error: Terminal session not found."
         
         content = session.get_screen_content()
+        logger.debug(f"[capture] Content length: {len(content)}")
+        
         if not content:
+            logger.debug(f"[capture] Content is empty!")
             return ""
         
         lines = content.split('\n')
@@ -556,7 +619,9 @@ class TerminalManager:
         end = min(len(lines), end)
         
         selected_lines = lines[start:end]
-        return '\n'.join(selected_lines)
+        result = '\n'.join(selected_lines)
+        logger.debug(f"[capture] Returning {len(selected_lines)} lines, {len(result)} chars")
+        return result
     
     def list_terminals(self) -> List[Dict[str, Any]]:
         """List all active terminal sessions."""
@@ -607,7 +672,7 @@ def create_terminal(directory: str = "/tmp", cols: int = 120, rows: int = 40) ->
     Create a new INTERACTIVE terminal session for controlling command-line programs.
     
     🖥️ THIS IS AN INTERACTIVE TERMINAL - You can:
-    • Run any command-line program
+    • Run any command-line programs
     • Control TUI applications (nano, vim, htop, less, top, mc, etc.)
     • Navigate menus with ARROW KEYS (Up/Down/Left/Right)
     • Use Ctrl+C to interrupt, Ctrl+D to exit, Ctrl+Z to suspend
@@ -625,8 +690,10 @@ def create_terminal(directory: str = "/tmp", cols: int = 120, rows: int = 40) ->
     Returns:
         {"terminal_id": "term_X", "status": "created", "cwd": "/path/to/dir"}
     """
+    logger.debug(f"[create_terminal] Called with directory={directory}, cols={cols}, rows={rows}")
     try:
         terminal_id = terminal_manager.create(directory, cols, rows)
+        logger.debug(f"[create_terminal] Created terminal: {terminal_id}")
         return {
             "terminal_id": terminal_id,
             "status": "created",
@@ -635,6 +702,8 @@ def create_terminal(directory: str = "/tmp", cols: int = 120, rows: int = 40) ->
             "rows": rows
         }
     except Exception as e:
+        logger.error(f"[create_terminal] Failed: {e}")
+        logger.error(traceback.format_exc())
         return {
             "terminal_id": None,
             "status": "error",
@@ -664,7 +733,9 @@ def send_text(terminal_id: str, text: str) -> dict:
     Returns:
         {"success": true/false, "terminal_id": "..."}
     """
+    logger.debug(f"[send_text] Called for {terminal_id}: {repr(text[:50])}")
     success = terminal_manager.send_text(terminal_id, text)
+    logger.debug(f"[send_text] Result: {success}")
     return {
         "success": success,
         "terminal_id": terminal_id,
@@ -720,7 +791,9 @@ def send_keys(terminal_id: str, keys: str) -> dict:
     Returns:
         {"success": true/false, "terminal_id": "...", "key_sent": "..."}
     """
+    logger.debug(f"[send_keys] Called for {terminal_id}: {keys}")
     success = terminal_manager.send_key(terminal_id, keys)
+    logger.debug(f"[send_keys] Result: {success}")
     return {
         "success": success,
         "terminal_id": terminal_id,
@@ -757,16 +830,20 @@ def get_screen(terminal_id: str, start_line: int = None, end_line: int = None) -
             "terminal_id": "term_1"
         }
     """
+    logger.debug(f"[get_screen] Called for {terminal_id}, start={start_line}, end={end_line}")
     content = terminal_manager.capture(terminal_id, start_line, end_line)
     info = terminal_manager.get_info(terminal_id)
     
     lines = content.split('\n') if content else []
     
+    logger.debug(f"[get_screen] Content length: {len(content)}, lines: {len(lines)}")
+    logger.debug(f"[get_screen] Content preview: {repr(content[:200]) if content else 'EMPTY'}")
+    
     error = None
     if content and content.startswith("Error:"):
         error = content
     
-    return {
+    result = {
         "content": content,
         "total_lines": len(lines),
         "visible_rows": info.get("visible_height", 0) if info else 0,
@@ -774,6 +851,8 @@ def get_screen(terminal_id: str, start_line: int = None, end_line: int = None) -
         "terminal_id": terminal_id,
         "error": error
     }
+    logger.debug(f"[get_screen] Returning: total_lines={result['total_lines']}, visible_rows={result['visible_rows']}")
+    return result
 
 
 @mcp.tool()
