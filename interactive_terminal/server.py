@@ -24,12 +24,18 @@ import urllib.error
 import threading
 import re
 import select
-import fcntl
+# fcntl is Unix-only - imported conditionally below
 from typing import Dict, Optional, List, Any
 from mcp.server.fastmcp import FastMCP
 
 # Platform detection
 import platform
+
+# Conditional import for fcntl (Unix only)
+if sys.platform != 'win32':
+    import fcntl
+else:
+    fcntl = None
 IS_WINDOWS = platform.system() == "Windows"
 
 # Platform-specific PTY imports

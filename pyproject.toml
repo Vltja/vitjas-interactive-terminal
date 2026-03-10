@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vitjas-interactive-terminal"
-version = "1.2.2"
+version = "1.2.3"
 description = "MCP Server providing fully interactive terminal sessions for AI agents - TUI support, keyboard control, screen capture - Cross-platform (Windows, Linux, Mac)"
 readme = "README.md"
 license = {text = "MIT"}
